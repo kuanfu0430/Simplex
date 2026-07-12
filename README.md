@@ -1,8 +1,6 @@
 # Simplex
 
-Simplex 是一套速度與證據品質優先的開源研究搜尋工具。它把 SearXNG、可替換的搜尋 API、LLM Judge、Crawl4AI 深爬與引用回答包成同一個 Web 產品，同時保留既有 `pro_search` MCP 介面。
-
-本專案不是 Perplexity 的畫面複製品；前端採 Apple 式簡約與 Liquid Glass 視覺，核心差異在於可檢查、可替換的搜尋與證據管線。
+Simplex 是一套速度與證據品質優先的開源研究搜尋工具。它把 SearXNG、可替換的搜尋 API、LLM Judge、Crawl4AI 深爬與引用回答包成同一個 Web 產品，並在搜尋後保持可供驗證的citation。
 
 ## 主要能力
 
