@@ -1,0 +1,12 @@
+.git
+.venv
+.runtime
+data
+frontend/node_modules
+frontend/dist
+__pycache__
+.ruff_cache
+*.pyc
+*.png
+.env
+study

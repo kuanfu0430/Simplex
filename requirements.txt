@@ -1,0 +1,66 @@
+# =============================================================================
+# Simplex — 直接依賴清單
+# =============================================================================
+# 一般使用請安裝完全鎖定的 requirements.lock；本檔保留直接依賴供維護者升級。
+# =============================================================================
+
+# ── 核心框架 ──────────────────────────────────────────────────
+# FastMCP：MCP 伺服器框架，提供 SSE transport、工具註冊等功能
+# 內含 starlette、uvicorn 等 ASGI 依賴
+fastmcp==3.4.4
+fastapi==0.139.0
+uvicorn==0.46.0
+cryptography==48.0.0
+
+# ── 環境變數 ──────────────────────────────────────────────────
+# 從 .env 檔案載入環境變數（如 OPENROUTER_API_KEY）
+python-dotenv==1.2.2
+
+# ── HTTP 客戶端 ───────────────────────────────────────────────
+# 非同步 HTTP 客戶端，用於：
+#   - Brave / Tavily / Exa / SerpApi 多來源搜尋
+#   - OpenRouter / NVIDIA LLM HTTP transport
+#   - 網頁 HTTP 抓取（HTTP/2 + 跟隨重定向）
+#   - Reddit .json API 快速取得
+httpx[http2]==0.28.1
+
+# ── LLM 呼叫 ─────────────────────────────────────────────────
+# DeepSeek / Gemini 路線透過 OpenRouter Chat Completions API 呼叫
+# 預設路線：d=openrouter/deepseek/deepseek-v4-flash
+# 可選路線：g=openrouter/google/gemini-3-flash-preview
+# LiteLLM 只會在自訂 transport 相容路徑中延遲匯入，不影響預設冷啟動
+litellm==1.91.1
+
+# ── HTML → 正文提取 ──────────────────────────────────────────
+# 高品質 HTML 正文提取器（主力引擎）
+# 支援 Markdown 輸出、表格提取、精準模式（favor_precision）
+# 作為 HTTP 爬取後的首選文本提取器；提供 baseline fallback
+trafilatura==2.1.0
+
+# ── PDF 自動解析 ──────────────────────────────────────────────
+# 專案內 `crawl4ai_pdf.py` 提供 PDF 偵測與抽取邏輯
+# PyMuPDF 為主引擎，pypdf 為文字層 fallback
+PyMuPDF==1.28.0
+pypdf==6.14.2
+
+# ── HTML 解析（fallback 用）────────────────────────────────────
+# 當 trafilatura 提取失敗時的後備 HTML 解析器
+# 也用於提取頁面標題（<title> / <h1>）
+# lxml 作為 BeautifulSoup 的高速解析後端
+beautifulsoup4==4.14.3
+lxml==6.1.1
+
+# ── 編碼偵測（內建 decode_response_text 使用）─────────────
+# 智慧編碼偵測，用於 decode_response_text 函數
+# 在 HTTP 抓取後嘗試多種編碼解碼，選出品質最高的文本
+charset-normalizer==3.4.7
+
+# ── JS 渲染爬取（必要）────────────────────────────────────────
+# Headless Chromium 爬取器，用於 JS fallback 場景：
+#   - SPA 應用（React / Next.js / Vue）
+#   - 動態載入的留言區
+#   - 需要 JavaScript 執行才能顯示內容的頁面
+# 安裝後必須同時準備 Playwright 與 Patchright Chromium。
+crawl4ai==0.9.1
+playwright==1.59.0
+patchright==1.59.1

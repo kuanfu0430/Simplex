@@ -1,0 +1,53 @@
+use_default_settings:
+  engines:
+    remove:
+      - ahmia
+      - torch
+
+general:
+  debug: false
+  instance_name: "Simplex Search"
+  enable_metrics: true
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  default_lang: "auto"
+  formats:
+    - html
+    - json
+
+server:
+  limiter: false
+  public_instance: false
+  image_proxy: false
+
+outgoing:
+  request_timeout: 4.0
+  max_request_timeout: 12.0
+  pool_connections: 100
+  pool_maxsize: 30
+  enable_http2: true
+
+categories_as_tabs:
+  general:
+  science:
+  social media:
+
+# 明確啟用 Simplex 需要的學術與社群搜尋引擎。
+# 其他一般搜尋引擎沿用 SearXNG 的安全預設值。
+engines:
+  - name: arxiv
+    disabled: false
+  - name: google scholar
+    disabled: false
+  - name: pubmed
+    disabled: false
+  - name: semantic scholar
+    disabled: false
+  - name: reddit
+    disabled: false
+  - name: lemmy posts
+    disabled: false
+  - name: lemmy comments
+    disabled: false

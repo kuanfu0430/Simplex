@@ -1,0 +1,43 @@
+services:
+  searxng:
+    image: docker.io/searxng/searxng:2026.7.11-62a1ab7ed
+    restart: unless-stopped
+    environment:
+      SEARXNG_BASE_URL: http://searxng:8080/
+      SEARXNG_SECRET: ${SEARXNG_SECRET:-simplex-local-only-change-me}
+      SEARXNG_LIMITER: "false"
+      SEARXNG_PUBLIC_INSTANCE: "false"
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+      - searxng-cache:/var/cache/searxng
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- 'http://127.0.0.1:8080/search?q=health&format=json' >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
+
+  simplex:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      searxng:
+        condition: service_started
+    environment:
+      SIMPLEX_DATA_DIR: /app/data
+      CRAWL4_AI_BASE_DIRECTORY: /app/data
+      SEARXNG_URL: http://searxng:8080
+      PDF_ENABLE_OCR: "true"
+      PDF_OCR_LANGUAGES: eng+chi_tra
+    volumes:
+      - simplex-data:/app/data
+    ports:
+      - "127.0.0.1:8787:8788"
+
+volumes:
+  simplex-data:
+  searxng-cache:

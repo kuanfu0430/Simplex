@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+case "${1:-start}" in
+  install)
+    exec "$ROOT/scripts/install_native.sh"
+    ;;
+  start)
+    if [[ ! -x "$ROOT/.venv/bin/python" ]]; then
+      echo "Simplex 尚未安裝，請先執行 ./simplex install" >&2
+      exit 1
+    fi
+    export PLAYWRIGHT_BROWSERS_PATH="$ROOT/.runtime/browsers"
+    exec "$ROOT/.venv/bin/python" "$ROOT/scripts/simplex_supervisor.py"
+    ;;
+  doctor)
+    export PLAYWRIGHT_BROWSERS_PATH="$ROOT/.runtime/browsers"
+    exec "$ROOT/.venv/bin/python" "$ROOT/scripts/doctor.py"
+    ;;
+  *)
+    echo "用法：./simplex {install|start|doctor}" >&2
+    exit 2
+    ;;
+esac

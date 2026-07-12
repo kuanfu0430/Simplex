@@ -1,0 +1,40 @@
+# 本地密鑰與環境變數
+.env
+.env.*
+!.env.example
+
+# Python 快取與測試產物
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# 虛擬環境與打包產物
+.venv/
+venv/
+.runtime/
+build/
+dist/
+*.egg-info/
+frontend/node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts
+
+# macOS 與編輯器產物
+.DS_Store
+.idea/
+.vscode/
+.antigravitycli/
+
+# 本地基準與除錯輸出
+benchmark-results/
+*.log
+
+# Simplex 本地狀態與視覺驗證產物
+data/
+simplex-*.png
