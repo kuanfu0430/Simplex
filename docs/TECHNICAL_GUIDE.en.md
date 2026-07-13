@@ -1,6 +1,6 @@
 # Simplex Technical and Operations Guide
 
-[Back to the entry README](../README.en.md) · [繁體中文技術文件](TECHNICAL_GUIDE.zh-TW.md)
+[Back to the entry README](../README.md) · [繁體中文技術文件](TECHNICAL_GUIDE.zh-TW.md)
 
 This document covers installation, configuration, the research pipeline, conversation context, PDF handling, APIs, security, and testing. Start with the entry README if you are new to the project.
 

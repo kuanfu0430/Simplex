@@ -1,6 +1,6 @@
 # Simplex 技術與操作指南
 
-[返回入口 README](../README.md) · [English technical guide](TECHNICAL_GUIDE.en.md)
+[返回繁體中文入口 README](../README.zh-TW.md) · [English entry](../README.md) · [English technical guide](TECHNICAL_GUIDE.en.md)
 
 本文件放置安裝、設定、研究管線、對話上下文、PDF、API、安全與測試細節。第一次接觸專案時，建議先閱讀入口 README。
 
