@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import unittest
@@ -28,10 +29,15 @@ assert helper.looks_like_pdf_bytes(b"%PDF-1.7\\n")
 assert helper.looks_like_pdf_url("https://example.com/report.PDF?download=1")
 assert helper.is_pdf_content_type("application/pdf; charset=binary")
 assert helper.detect_resource_type("https://example.com/x", "text/html", b"<html>") == "html"
+assert helper.PDF_OCR_LANGUAGES == "eng+chi_tra+chi_sim+jpn"
 """
         結果 = subprocess.run(
             [sys.executable, "-c", 程式],
             cwd=專案根目錄,
+            env={
+                **os.environ,
+                "PDF_OCR_LANGUAGES": "",
+            },
             text=True,
             capture_output=True,
             check=False,

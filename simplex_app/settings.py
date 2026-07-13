@@ -86,9 +86,10 @@ LLM供應商預設值 = [
 
 def 預設設定() -> dict[str, Any]:
     return {
-        "ui": {"theme": "dark", "scale": 1.0},
+        "ui": {"theme": "dark", "scale": 1.0, "language": "en"},
         "llm": {
             "providers": deepcopy(LLM供應商預設值),
+            "model_pool": [],
             "question_model": {"provider_id": "openrouter", "model": ""},
             "judge_model": {"provider_id": "openrouter", "model": ""},
         },
@@ -212,6 +213,10 @@ class 設定儲存庫:
             self._保留未重填的密鑰(目前, 合併)
             self._寫入連線(連線, 合併)
             return 合併
+
+    def 取得本機密封器(self) -> Fernet:
+        """供同一台機器的短期上下文膠囊加密與驗證使用。"""
+        return self._密碼器
 
     @staticmethod
     def _保留未重填的密鑰(目前: dict[str, Any], 新值: dict[str, Any]) -> None:

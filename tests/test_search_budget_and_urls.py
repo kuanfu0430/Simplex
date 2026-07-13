@@ -34,6 +34,29 @@ class URL正規化測試(unittest.TestCase):
             "https://example.com/path?a=1&signature=z",
         )
 
+    def test_直接網址會去重並移除訊息尾端標點(self) -> None:
+        實際 = 搜尋管線.extract_explicit_urls(
+            "請看（https://example.com/a?x=1）。以及 https://EXAMPLE.com/a?x=1 和 https://other.example/b)."
+        )
+
+        self.assertEqual(
+            實際,
+            {
+                "urls": ["https://example.com/a?x=1", "https://other.example/b"],
+                "overflow": False,
+                "total": 2,
+            },
+        )
+
+    def test_直接網址超過上限會回報而非靜默遺漏(self) -> None:
+        網址 = " ".join(f"https://example.com/{索引}" for 索引 in range(6))
+
+        實際 = 搜尋管線.extract_explicit_urls(網址)
+
+        self.assertEqual(len(實際["urls"]), 5)
+        self.assertTrue(實際["overflow"])
+        self.assertEqual(實際["total"], 6)
+
 
 class 搜尋配額測試(unittest.TestCase):
     """確保缺席來源的配額會盡量補到可用來源且不越過 API 上限。"""
@@ -87,8 +110,8 @@ class 爬取預算測試(unittest.TestCase):
             [
                 "https://example.com/a",
                 "https://other.example/d",
-                "https://example.com/b",
                 "https://third.example/e",
+                "https://example.com/b",
             ],
         )
         self.assertEqual({項目["group_index"] for 項目 in 已選}, {0, 1, 2})
@@ -118,6 +141,24 @@ class 爬取預算測試(unittest.TestCase):
             len({搜尋管線._normalize_url(項目["url"]) for 項目 in 已選}),
             2,
         )
+
+    def test_三組候選都充足時仍保留每組深爬名額(self) -> None:
+        候選 = [
+            {"url": "https://first.example/a", "group_index": 0},
+            {"url": "https://second.example/b", "group_index": 1},
+            {"url": "https://first.example/c", "group_index": 0},
+            {"url": "https://second.example/d", "group_index": 1},
+            {"url": "https://third.example/e", "group_index": 2},
+        ]
+
+        已選, _ = 搜尋管線._allocate_loop_crawl_budget(
+            候選,
+            min_total=3,
+            target_total=4,
+            max_total=5,
+        )
+
+        self.assertEqual({項目["group_index"] for 項目 in 已選}, {0, 1, 2})
 
     def test_零硬上限會回傳可預期的空統計(self) -> None:
         已選, 統計 = 搜尋管線._allocate_loop_crawl_budget(

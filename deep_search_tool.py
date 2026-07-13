@@ -36,6 +36,7 @@ import time
 import unicodedata
 from contextlib import suppress
 from contextvars import ContextVar
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
@@ -64,6 +65,69 @@ VALID_EXECUTION_MODES = frozenset({"instant", "fast", "full"})
 VALID_MODEL_ROUTES = frozenset({"d", "g"})
 VALID_RENDER_MODES = frozenset({"auto", "never", "always"})
 DEFAULT_MODEL_ROUTE = "d"
+研究進度回報器 = Callable[[dict[str, Any]], None]
+
+
+def _回報研究進度(回報器: 研究進度回報器 | None, 事件: dict[str, Any]) -> None:
+    """進度只用於 UI，不能影響既有研究管線。"""
+    if not 回報器:
+        return
+    try:
+        回報器(事件)
+    except Exception:
+        pass
+
+
+def _追蹤來源(項目: dict[str, Any]) -> dict[str, str]:
+    return {
+        "title": str(項目.get("title") or 項目.get("url") or "Untitled"),
+        "url": str(項目.get("url") or ""),
+    }
+
+
+def _依查詢分組來源(項目清單: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    分組: dict[str, list[dict[str, str]]] = {}
+    for 項目 in 項目清單:
+        查詢 = str(項目.get("from_query") or 項目.get("query") or "")
+        if not 查詢:
+            continue
+        分組.setdefault(查詢, []).append(_追蹤來源(項目))
+    return [
+        {"query": 查詢, "sources": 來源}
+        for 查詢, 來源 in 分組.items()
+    ]
+
+
+def _追蹤區塊(區塊: dict[str, Any]) -> dict[str, str]:
+    預覽 = re.sub(r"\s+", " ", str(區塊.get("text") or "")).strip()
+    if len(預覽) > 280:
+        預覽 = f"{預覽[:277].rstrip()}…"
+    return {
+        "chunk_id": str(區塊.get("chunk_id") or ""),
+        "title": str(區塊.get("title") or ""),
+        "source_url": str(區塊.get("source_url") or ""),
+        "from_query": str(區塊.get("from_query") or ""),
+        "preview": 預覽,
+    }
+
+
+def _回報回答證據(
+    回報器: 研究進度回報器 | None,
+    審核結果: dict[str, Any],
+    輪次: int,
+) -> None:
+    區塊 = [_追蹤區塊(項目) for 項目 in 審核結果.get("selected_chunks", []) if isinstance(項目, dict)]
+    if not 區塊:
+        return
+    _回報研究進度(
+        回報器,
+        {
+            "type": "final_evidence",
+            "stage": "chunk_judge",
+            "round": 輪次,
+            "chunks": 區塊,
+        },
+    )
 
 
 def normalize_search_mode(search_mode: Any) -> str:
@@ -685,6 +749,10 @@ OPENROUTER_TIMEOUT_SECONDS = 90.0
 MAX_CRAWL_CONCURRENCY = 10
 MAX_JS_CONCURRENCY = 3
 MAX_CHARS_PER_PAGE = 500000
+DIRECT_URL_LIMIT = 5
+DIRECT_CRAWL_CONCURRENCY = 5
+DIRECT_PLANNER_CONTEXT_TOKEN_LIMIT = 6000
+REFRESH_URL_LIMIT = 2
 SPECULATIVE_JS_WAIT_SECONDS = 1.5
 SPECULATIVE_JS_PATH_RE = re.compile(
     r"(?:^|[/_.-])(?:"
@@ -697,6 +765,7 @@ SPECULATIVE_JS_QUERY_RE = re.compile(
     r"(?:^|&)(?:comment|comments|reply|thread|topic|discussion|post|question)=",
     re.IGNORECASE,
 )
+EXPLICIT_HTTP_URL_RE = re.compile(r"https?://[^\s<>{}\[\]\"'，。；：！？、】【（）《》「」『』]+", re.IGNORECASE)
 
 INSTANT_RESULTS_PER_QUERY = 10
 INSTANT_LOOP_CRAWL_BUDGET = {"min_total": 3, "target_total": 4, "max_total": 5}
@@ -706,7 +775,7 @@ FAST_SECOND_LOOP_RESULTS_PER_QUERY = 8
 FAST_SECOND_LOOP_MIN_SELECT_PER_GROUP = 1
 FAST_SECOND_LOOP_MAX_SELECT_PER_GROUP = 3
 FULL_LOOP_CRAWL_BUDGET = {"min_total": 6, "target_total": 8, "max_total": 9}
-LOOP_MIN_QUERY_COVERAGE = 2
+LOOP_MIN_QUERY_COVERAGE = 3
 LOOP_SOFT_DOMAIN_CAP = 2
 
 HTTP_USER_AGENT = (
@@ -1336,6 +1405,7 @@ def _build_llm_route_config(
         endpoint = str(model_settings.get("chat_endpoint") or "/chat/completions").strip()
         if endpoint and not endpoint.startswith("/"):
             endpoint = f"/{endpoint}"
+        使用OpenRouter格式 = provider.lower() == "openrouter" or "openrouter.ai" in base_url.lower()
         return {
             "route": provider,
             "transport": "openai_compatible_http",
@@ -1345,9 +1415,9 @@ def _build_llm_route_config(
             "api_key": str(model_settings.get("api_key") or "").strip(),
             "base_url": f"{base_url}{endpoint}" if base_url else "",
             "headers": dict(model_settings.get("headers") or {}),
-            # Judge 是篩選器而不是推理型回答器；固定關閉 OpenRouter 相容的 reasoning，
-            # 避免 Web 設定省略欄位後重新啟用大量隱藏推理 token。
-            "reasoning": {"effort": "none"},
+            # Judge 是篩選器而不是推理型回答器；依端點使用對應的停用格式。
+            "reasoning": {"effort": "none"} if 使用OpenRouter格式 else None,
+            "reasoning_effort": None if 使用OpenRouter格式 else "none",
         }
 
     route = normalize_model_route(model_route)
@@ -1409,6 +1479,7 @@ async def _openrouter_chat_completion(
     model: str,
     messages: list[dict[str, str]],
     reasoning: dict[str, Any] | None = None,
+    reasoning_effort: str | None = None,
     api_key: str | None = None,
     base_url: str | None = None,
     extra_headers: dict[str, str] | None = None,
@@ -1426,6 +1497,8 @@ async def _openrouter_chat_completion(
     }
     if reasoning is not None:
         payload["reasoning"] = reasoning
+    if reasoning_effort:
+        payload["reasoning_effort"] = reasoning_effort
 
     headers = {
         "Authorization": f"Bearer {active_api_key}",
@@ -1529,6 +1602,7 @@ async def _call_llm_raw_content(
             model=str(llm_config.get("model") or ""),
             messages=messages,
             reasoning=llm_config.get("reasoning"),
+            reasoning_effort=llm_config.get("reasoning_effort"),
             api_key=llm_config.get("api_key"),
             base_url=llm_config.get("base_url"),
             extra_headers=llm_config.get("headers"),
@@ -2899,6 +2973,9 @@ async def multi_source_search(
 OPEN_EVIDENCE_DIVERSITY_INSTRUCTION = """## 開放性與證據多元性原則
 你應該保持開放性的態度看待問題，不偏好任何觀點，且應盡力維持證據的多元性，若在查詢過程中發現相互矛盾的不同觀點，應將各種觀點都予以保留，不得擅自進行判斷與挑選。"""
 
+OPEN_VIEWPOINT_DIVERSITY_INSTRUCTION = """## 開放性與論述多元性原則
+你應該保持開放性的態度看待問題，不偏好任何觀點，且應盡力維持論述的多元性，若你發現搜尋資料存在相互矛盾的不同觀點，應將各種觀點予以保留，不得擅自進行判斷與挑選。"""
+
 CHUNK_MINIMAL_EVIDENCE_SET_INSTRUCTION = "請選出最小充分 evidence set。若多個 chunks 支持同一事實且內容高度重複，優先保留最直接、最新、來源權威或資訊密度最高者；但不同來源的交叉驗證、補充必要細節、保留相互矛盾資訊，不得因表面相似而刪除。"
 
 
@@ -2964,6 +3041,8 @@ def _build_filter_system_prompt(
 從每組搜尋結果中，精準篩選出最值得進行全文深度爬取的網頁。你的篩選品質直接決定最終回答的資料基礎。
 
 {OPEN_EVIDENCE_DIVERSITY_INSTRUCTION}
+
+{OPEN_VIEWPOINT_DIVERSITY_INSTRUCTION}
 
 {criteria}
 
@@ -3103,6 +3182,64 @@ def _parse_filter_response(
     return validated
 
 
+def _補足每組URL選取(
+    選取結果: list[dict[str, Any]],
+    查詢群組: list[dict[str, Any]],
+    *,
+    min_per_group: int,
+    max_per_group: int,
+) -> list[dict[str, Any]]:
+    """即使 URL Judge 成功解析，也確保每組搜尋字詞都有可深爬候選。"""
+    每組選取: dict[int, dict[str, Any]] = {}
+    排序: list[int] = []
+    上限 = max(0, max_per_group)
+    最少數 = max(0, min(min_per_group, 上限))
+
+    for 項目 in 選取結果:
+        組別 = 項目.get("group_index")
+        if not isinstance(組別, int) or not 0 <= 組別 < len(查詢群組):
+            continue
+        結果數 = len(查詢群組[組別].get("results", []))
+        索引 = [
+            值 for 值 in 項目.get("result_indices", [])
+            if isinstance(值, int) and 0 <= 值 < 結果數
+        ]
+        if not 索引:
+            continue
+        if 組別 not in 每組選取:
+            每組選取[組別] = {
+                "group_index": 組別,
+                "result_indices": [],
+                "reasoning": str(項目.get("reasoning") or ""),
+            }
+            排序.append(組別)
+        既有索引 = 每組選取[組別]["result_indices"]
+        for 值 in 索引:
+            if 值 not in 既有索引 and len(既有索引) < 上限:
+                既有索引.append(值)
+
+    for 組別, 群組 in enumerate(查詢群組):
+        結果數 = len(群組.get("results", []))
+        需要數 = min(最少數, 結果數)
+        if 需要數 <= 0:
+            continue
+        if 組別 not in 每組選取:
+            每組選取[組別] = {
+                "group_index": 組別,
+                "result_indices": [],
+                "reasoning": "coverage fallback",
+            }
+            排序.append(組別)
+        既有索引 = 每組選取[組別]["result_indices"]
+        for 索引 in range(結果數):
+            if len(既有索引) >= 需要數:
+                break
+            if 索引 not in 既有索引:
+                既有索引.append(索引)
+
+    return [每組選取[組別] for 組別 in 排序]
+
+
 async def llm_filter_results(
     original_question: str,
     query_groups: list[dict],
@@ -3175,6 +3312,14 @@ async def llm_filter_results(
                         "reasoning": "fallback: LLM 回傳解析失敗",
                     }
                 )
+
+    # Judge 即使回傳合法 JSON，也可能漏掉某組；不可讓其中一組失去深爬與證據機會。
+    validated = _補足每組URL選取(
+        validated,
+        prompt_query_groups,
+        min_per_group=min_per_group,
+        max_per_group=max_per_group,
+    )
 
     # 提取 URL 並附帶來源資訊（含 URL 去重）
     selected_urls: list[dict[str, Any]] = []
@@ -3943,21 +4088,44 @@ def _clean_pipeline_content(text: str, *, title: str = "", url: str = "") -> str
     return current
 
 
+def _clean_pdf_content(text: str, *, title: str = "") -> str:
+    """保留 PDF 頁面與段落邊界，避免套用 HTML 導覽清洗規則。"""
+    current = sanitize_text(text, preserve_newlines=True, aggressive=True)
+    if not current:
+        return ""
+
+    current = re.sub(r"\n{3,}", "\n\n", current).strip()
+    if title:
+        first_line = current.splitlines()[0].strip() if current else ""
+        if current and not first_line.startswith("#") and title[:18] not in first_line:
+            current = f"# {sanitize_text(title, preserve_newlines=False)}\n\n{current}"
+    return current
+
+
 def _refresh_attempt_after_clean(attempt: Any, url: str) -> Any:
     content = getattr(attempt, "content", "") or ""
     if not content:
         return attempt
 
-    cleaned = _clean_pipeline_content(
-        content,
-        title=getattr(attempt, "title", "") or "",
-        url=url,
-    )
+    resource_type = str(getattr(attempt, "resource_type", "html") or "html").lower()
+    if resource_type == "pdf":
+        cleaned = _clean_pdf_content(
+            content,
+            title=getattr(attempt, "title", "") or "",
+        )
+        clean_step = "pdf_boundary_preserving_clean"
+    else:
+        cleaned = _clean_pipeline_content(
+            content,
+            title=getattr(attempt, "title", "") or "",
+            url=url,
+        )
+        clean_step = "pipeline_noise_trim"
     if cleaned != content:
         steps = list(getattr(attempt, "postprocess_steps", []) or [])
         steps.append(
             {
-                "step": "pipeline_noise_trim",
+                "step": clean_step,
                 "changed": True,
                 "before_len": len(content),
                 "after_len": len(cleaned),
@@ -4494,6 +4662,89 @@ async def batch_deep_crawl(
     return list(results)
 
 
+def _trim_explicit_url_token(value: str) -> str:
+    """移除訊息排版帶入的尾端標點，不改動 URL 內部 query。"""
+    trimmed = str(value or "").strip().rstrip(".,;:!?，。；：！？")
+    while trimmed.endswith(")") and trimmed.count(")") > trimmed.count("("):
+        trimmed = trimmed[:-1]
+    return trimmed
+
+
+def extract_explicit_urls(
+    text: str,
+    *,
+    max_urls: int = DIRECT_URL_LIMIT,
+) -> dict[str, Any]:
+    """從目前訊息擷取 HTTP(S) URL；保留首個原始 URL 以避免破壞簽名 query。"""
+    unique_urls: list[str] = []
+    seen: set[str] = set()
+    for match in EXPLICIT_HTTP_URL_RE.finditer(str(text or "")):
+        candidate = _trim_explicit_url_token(match.group(0))
+        normalized = _normalize_url(candidate)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        unique_urls.append(candidate)
+    limit = max(1, int(max_urls or DIRECT_URL_LIMIT))
+    return {
+        "urls": unique_urls[:limit],
+        "overflow": len(unique_urls) > limit,
+        "total": len(unique_urls),
+    }
+
+
+def _bounded_unique_urls(values: Iterable[Any] | None, *, limit: int) -> list[str]:
+    """以 canonical URL 去重，但保留原 URL 供帶簽名 query 的實際請求使用。"""
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values or []:
+        url = str(value or "").strip()
+        normalized = _normalize_url(url)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(url)
+        if len(result) >= limit:
+            break
+    return result
+
+
+async def crawl_explicit_urls(
+    urls: list[str],
+    *,
+    max_chars_per_page: int = MAX_CHARS_PER_PAGE,
+    render: str = "auto",
+) -> dict[str, Any]:
+    """爬取使用者在本輪明確貼上的 URL，沿用正式 HTTP／JS／PDF 安全管線。"""
+    started = time.perf_counter()
+    normalized_urls = [str(url).strip() for url in urls if str(url).strip()]
+    if not normalized_urls:
+        return {"pages": [], "failed": [], "elapsed_ms": 0}
+
+    monitor = PipelineMonitor(enabled=False)
+    crawled = await batch_deep_crawl(
+        normalized_urls,
+        max_chars_per_page=max_chars_per_page,
+        max_concurrency=min(DIRECT_CRAWL_CONCURRENCY, len(normalized_urls)),
+        render=render,
+        monitor=monitor,
+    )
+    pages: list[dict[str, Any]] = []
+    failed: list[dict[str, Any]] = []
+    for page in crawled:
+        item = dict(page)
+        item["from_query"] = "Provided URL"
+        if item.get("success"):
+            pages.append(item)
+        else:
+            failed.append(item)
+    return {
+        "pages": pages,
+        "failed": failed,
+        "elapsed_ms": int((time.perf_counter() - started) * 1000),
+    }
+
+
 async def shutdown_shared_resources() -> None:
     """關閉搜尋 API 與新版爬蟲內核共用資源。"""
     await _close_llm_api_client()
@@ -4652,14 +4903,54 @@ def _score_chunk_for_question(
     return score
 
 
-def _extract_review_paragraphs(text: str) -> list[str]:
+_PDF_PAGE_MARKER_PATTERN = re.compile(r"(?m)^##\s*第\s*\d+\s*頁\s*$")
+
+
+def _extract_pdf_review_paragraphs(sample: str) -> list[str]:
+    """依頁面合併 PDF 的物理短行，再交給既有長度門檻。"""
+    paragraphs: list[str] = []
+    page_sections = _PDF_PAGE_MARKER_PATTERN.split(sample)
+    for section in page_sections:
+        lines = [line.strip() for line in section.splitlines() if line.strip()]
+        if not lines:
+            continue
+
+        current_lines: list[str] = []
+        current_length = 0
+        for line in lines:
+            additional_length = len(line) + (1 if current_lines else 0)
+            if current_lines and current_length + additional_length > CHUNK_TARGET_CHARS:
+                paragraphs.append(" ".join(current_lines))
+                current_lines = [line]
+                current_length = len(line)
+            else:
+                current_lines.append(line)
+                current_length += additional_length
+
+        if current_lines:
+            remainder = " ".join(current_lines)
+            if len(remainder) < CHUNK_MIN_CHARS and paragraphs:
+                paragraphs[-1] = f"{paragraphs[-1]} {remainder}".strip()
+            else:
+                paragraphs.append(remainder)
+    return paragraphs
+
+
+def _extract_review_paragraphs(
+    text: str,
+    *,
+    resource_type: str = "html",
+) -> list[str]:
     sample = sanitize_text(text or "", preserve_newlines=True, aggressive=True)
     if not sample.strip():
         return []
 
-    paragraphs = [p.strip() for p in re.split(r"\n{2,}", sample) if p.strip()]
-    if len(paragraphs) <= 1:
-        paragraphs = [p.strip() for p in sample.splitlines() if p.strip()]
+    if resource_type.lower() == "pdf":
+        paragraphs = _extract_pdf_review_paragraphs(sample)
+    else:
+        paragraphs = [p.strip() for p in re.split(r"\n{2,}", sample) if p.strip()]
+        if len(paragraphs) <= 1:
+            paragraphs = [p.strip() for p in sample.splitlines() if p.strip()]
 
     cleaned: list[str] = []
     seen: set[str] = set()
@@ -4682,7 +4973,10 @@ def _page_to_review_chunks(
     source_ordinal: int,
     question: str,
 ) -> list[dict[str, Any]]:
-    paragraphs = _extract_review_paragraphs(page.get("content", ""))
+    paragraphs = _extract_review_paragraphs(
+        page.get("content", ""),
+        resource_type=str(page.get("resource_type", "html") or "html"),
+    )
     if not paragraphs:
         return []
 
@@ -4742,6 +5036,73 @@ def _build_review_chunks_for_pages(
     return chunks
 
 
+def _estimate_context_tokens(text: str) -> int:
+    """避免新增 tokenizer 依賴，保守估算中英文混合的規劃提示詞成本。"""
+    value = str(text or "")
+    han_count = sum(1 for char in value if "\u3400" <= char <= "\u9fff")
+    return han_count + (max(0, len(value) - han_count) + 3) // 4
+
+
+def build_direct_planner_context(
+    question: str,
+    pages: list[dict[str, Any]],
+    *,
+    token_limit: int = DIRECT_PLANNER_CONTEXT_TOKEN_LIMIT,
+) -> list[dict[str, str]]:
+    """將指定連結的正文壓成公平、相關且受限的規劃摘要，不送整頁全文給分詞模型。"""
+    chunks = _build_review_chunks_for_pages(
+        pages,
+        round_number=0,
+        question=question,
+    )
+    by_source: dict[str, list[dict[str, Any]]] = {}
+    for chunk in chunks:
+        source_key = str(chunk.get("source_url") or chunk.get("source_ref") or "")
+        if source_key:
+            by_source.setdefault(source_key, []).append(chunk)
+    for source_chunks in by_source.values():
+        source_chunks.sort(key=lambda item: float(item.get("_score", 0.0)), reverse=True)
+
+    selected: list[dict[str, str]] = []
+    cursors = {key: 0 for key in by_source}
+    used_tokens = 0
+    while by_source and used_tokens < token_limit:
+        added = False
+        for source_key, source_chunks in by_source.items():
+            cursor = cursors[source_key]
+            if cursor >= len(source_chunks):
+                continue
+            chunk = source_chunks[cursor]
+            cursors[source_key] += 1
+            text = str(chunk.get("text") or "").strip()
+            if not text:
+                continue
+            remaining = token_limit - used_tokens
+            if remaining <= 0:
+                break
+            cost = _estimate_context_tokens(text)
+            if cost > remaining:
+                # 預留可辨識的一小段，不讓單一長文吞沒其他指定來源。
+                char_limit = max(240, remaining * 3)
+                text = _smart_truncate(text, char_limit)
+                cost = _estimate_context_tokens(text)
+            if not text or cost > remaining:
+                continue
+            selected.append(
+                {
+                    "chunk_id": str(chunk.get("chunk_id") or ""),
+                    "title": str(chunk.get("title") or source_key),
+                    "url": str(chunk.get("source_url") or source_key),
+                    "text": text,
+                }
+            )
+            used_tokens += cost
+            added = True
+        if not added:
+            break
+    return selected
+
+
 def _select_chunks_for_reviewer_prompt(
     chunks: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -4781,6 +5142,7 @@ def _build_chunk_reviewer_system_prompt(
     return f"""你是一位研究流程 reviewer。你不負責寫最終答案，只負責根據用戶問題審核本輪爬蟲 chunk，並判斷證據是否足夠。
 
 {OPEN_EVIDENCE_DIVERSITY_INSTRUCTION}
+{OPEN_VIEWPOINT_DIVERSITY_INSTRUCTION}
 {instant_note}
 
 ## 任務
@@ -5242,6 +5604,47 @@ def _build_evidence_outputs(
     return evidence_pages, source_registry, evidence_bundle, flat_selected
 
 
+async def review_explicit_pages(
+    *,
+    question: str,
+    pages: list[dict[str, Any]],
+    search_mode: str,
+    execution_mode: str,
+    judge_model_config: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """審核本輪直接爬得的頁面，產生可引用證據與是否可直接回答的判定。"""
+    started = time.perf_counter()
+    monitor = PipelineMonitor(enabled=False)
+    llm_config = _build_llm_route_config(
+        DEFAULT_MODEL_ROUTE,
+        None,
+        judge_model_config or {},
+    )
+    review = await review_crawled_chunks(
+        question=question,
+        search_queries=["Provided URL"],
+        search_mode=normalize_search_mode(search_mode),
+        execution_mode=normalize_execution_mode(execution_mode),
+        pages=pages,
+        round_number=0,
+        llm_config=llm_config,
+        mon=monitor,
+        final_round=False,
+    )
+    evidence_pages, source_registry, evidence_bundle, selected_chunks = _build_evidence_outputs(
+        pages,
+        list(review.get("selected_chunks", [])),
+    )
+    return {
+        "review": review,
+        "evidence_pages": evidence_pages,
+        "source_registry": source_registry,
+        "evidence_bundle": evidence_bundle,
+        "selected_chunks": selected_chunks,
+        "elapsed_ms": int((time.perf_counter() - started) * 1000),
+    }
+
+
 def _chunk_filter_summary(review_results: list[dict[str, Any]]) -> dict[str, Any]:
     total_chunks = sum(int(r.get("total_chunks", 0)) for r in review_results)
     prompted_chunks = sum(int(r.get("prompted_chunks", 0)) for r in review_results)
@@ -5419,6 +5822,8 @@ async def _run_search_loop(
     existing_urls: set[str] | None = None,
     tavily_search_depth: str | None = None,
     carryover_query_groups: list[dict[str, Any]] | None = None,
+    language: str = "en",
+    progress_callback: 研究進度回報器 | None = None,
 ) -> dict[str, Any]:
     """
     執行一次完整搜尋迴圈（Steps 1-5），返回結構化結果。
@@ -5450,8 +5855,25 @@ async def _run_search_loop(
         search_mode=search_mode,
         results_per_query=results_per_query,
         question=question,
+        language=language,
         tavily_search_depth=tavily_search_depth,
         search_provider_config=search_provider_config,
+    )
+
+    _回報研究進度(
+        progress_callback,
+        {
+            "type": "search_results",
+            "stage": "url_judge",
+            "queries": [
+                {
+                    "query": str(group.get("query") or ""),
+                    "sources": [_追蹤來源(item) for item in group.get("results", []) if isinstance(item, dict)],
+                }
+                for group in search_result.get("query_groups", [])
+                if isinstance(group, dict)
+            ],
+        },
     )
 
     mon.search_results(search_result["query_groups"])
@@ -5568,6 +5990,15 @@ async def _run_search_loop(
     urls_to_crawl = [item["url"] for item in selected_candidates]
     total_budget_trimmed_before_crawl = int(budget_stats.get("budget_trimmed", 0))
 
+    _回報研究進度(
+        progress_callback,
+        {
+            "type": "url_selection",
+            "stage": "crawling",
+            "queries": _依查詢分組來源(selected_candidates),
+        },
+    )
+
     if total_budget_trimmed_before_crawl > 0:
         mon._print(
             f"  {mon.YELLOW}[BUDGET] {loop_label} 候選 {budget_stats['candidate_count']} → "
@@ -5628,6 +6059,10 @@ async def _run_search_loop(
 
     success_count = sum(1 for p in crawled if p.get("success"))
     mon.step_done(s + 3, f"成功 {success_count}/{len(crawled)} 頁")
+    _回報研究進度(
+        progress_callback,
+        {"type": "crawl_complete", "stage": "chunk_judge"},
+    )
 
     # ── Step s+4: 位置策略排序 ──
     successful = [p for p in crawled if p.get("success")]
@@ -5882,6 +6317,11 @@ async def deep_search(
     crawl_concurrency: int = MAX_CRAWL_CONCURRENCY,
     render: str = "auto",
     verbose: bool = True,
+    language: str = "en",
+    progress_callback: 研究進度回報器 | None = None,
+    prior_evidence_chunks: list[dict[str, Any]] | None = None,
+    refresh_urls: list[str] | None = None,
+    excluded_urls: list[str] | None = None,
 ) -> dict[str, Any]:
     """
     深度搜尋管線 V3 — 使用 Brave/Tavily/Exa/SerpApi 多源搜尋。
@@ -5902,6 +6342,11 @@ async def deep_search(
         crawl_concurrency: 爬取最大並行數
         render: 爬取渲染策略 "auto" | "never" | "always"
         verbose: 是否在終端即時顯示管線 I/O
+        language: 搜尋 Provider 使用的語言提示
+        progress_callback: 提供給 Web UI 的非阻塞研究進度回報
+        prior_evidence_chunks: 前一輪已驗證 chunks；只提供 Judge 辨識既有覆蓋與缺口
+        refresh_urls: 已驗證舊來源中需要重新爬取的 URL；最多兩個，與首輪搜尋並行
+        excluded_urls: 已於本輪直接爬取的 URL；搜尋結果若命中時跳過重複深爬
 
     Returns:
         包含完整搜尋結果的字典
@@ -5939,6 +6384,20 @@ async def deep_search(
     search_mode = normalized_search_mode
     mode = normalized_mode
     model = normalize_model_route(model)
+    requested_refresh_urls = _bounded_unique_urls(
+        refresh_urls,
+        limit=REFRESH_URL_LIMIT,
+    )
+    crawl_excluded_urls = {
+        _normalize_url(url)
+        for url in _bounded_unique_urls(excluded_urls, limit=DIRECT_URL_LIMIT)
+        if _normalize_url(url)
+    }
+    crawl_excluded_urls.update(
+        _normalize_url(url)
+        for url in requested_refresh_urls
+        if _normalize_url(url)
+    )
 
     mon = PipelineMonitor(enabled=verbose)
     _monitor_context.set(mon)
@@ -5965,6 +6424,8 @@ async def deep_search(
         crawl_concurrency=crawl_concurrency,
         render=render,
         mon=mon,
+        language=language,
+        progress_callback=progress_callback,
     )
     if mode == "instant":
         loop_crawl_budget = dict(INSTANT_LOOP_CRAWL_BUDGET)
@@ -5976,15 +6437,67 @@ async def deep_search(
     # =============================================
     # Loop 1
     # =============================================
-    loop1 = await _run_search_loop(
-        search_queries=search_queries,
-        search_mode=search_mode,
-        loop_label="[Loop 1]",
-        step_offset=0,
-        loop_crawl_budget=loop_crawl_budget,
-        tavily_search_depth="fast",
-        **loop_kwargs,
-    )
+    refresh_task: asyncio.Task[list[dict[str, Any]]] | None = None
+    if requested_refresh_urls:
+        mon._print(
+            f"  {mon.DIM}[REFRESH] 與 Loop 1 並行重讀 "
+            f"{len(requested_refresh_urls)} 個已驗證來源{mon.RESET}"
+        )
+        refresh_task = asyncio.create_task(
+            batch_deep_crawl(
+                requested_refresh_urls,
+                max_chars_per_page=max_chars_per_page,
+                max_concurrency=min(REFRESH_URL_LIMIT, crawl_concurrency),
+                render=render,
+                monitor=mon,
+            )
+        )
+    try:
+        loop1 = await _run_search_loop(
+            search_queries=search_queries,
+            search_mode=search_mode,
+            loop_label="[Loop 1]",
+            step_offset=0,
+            loop_crawl_budget=loop_crawl_budget,
+            tavily_search_depth="fast",
+            existing_urls=crawl_excluded_urls or None,
+            **loop_kwargs,
+        )
+    except Exception:
+        if refresh_task is not None:
+            refresh_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await refresh_task
+        raise
+
+    refreshed_pages: list[dict[str, Any]] = []
+    refresh_failed: list[dict[str, Any]] = []
+    if refresh_task is not None:
+        try:
+            refreshed = await refresh_task
+        except Exception as exc:
+            refreshed = []
+            mon._print(f"  {mon.YELLOW}[REFRESH] 重讀失敗：{type(exc).__name__}{mon.RESET}")
+        existing_page_urls = {
+            _normalize_url(page.get("url", ""))
+            for page in loop1.get("pages", [])
+            if _normalize_url(page.get("url", ""))
+        }
+        for page in refreshed:
+            item = dict(page)
+            item["from_query"] = "Refreshed verified source"
+            normalized = _normalize_url(item.get("url", ""))
+            if item.get("success") and normalized and normalized not in existing_page_urls:
+                existing_page_urls.add(normalized)
+                refreshed_pages.append(item)
+            elif not item.get("success"):
+                refresh_failed.append(item)
+        if refreshed_pages:
+            loop1["pages"] = [*refreshed_pages, *loop1.get("pages", [])]
+            loop1["success"] = True
+            loop1["error"] = None
+        if refresh_failed:
+            loop1["failed"] = [*loop1.get("failed", []), *refresh_failed]
 
     social_fallback: dict[str, Any] | None = None
     social_fallback_queries: list[str] = []
@@ -6001,7 +6514,11 @@ async def deep_search(
             mon._print(f"  {mon.YELLOW}[SOCIAL] 啟用 site: 補搜{mon.RESET}")
             mon._print(f"  {mon.DIM}queries: {social_fallback_queries}{mon.RESET}")
 
-            existing_urls = {_normalize_url(p["url"]) for p in loop1.get("pages", [])}
+            existing_urls = set(crawl_excluded_urls) | {
+                _normalize_url(p["url"])
+                for p in loop1.get("pages", [])
+                if _normalize_url(p.get("url", ""))
+            }
             social_remaining_budget = {
                 "min_total": max(
                     0,
@@ -6039,6 +6556,8 @@ async def deep_search(
                     mon=mon,
                     existing_urls=existing_urls,
                     tavily_search_depth="fast",
+                    language=language,
+                    progress_callback=progress_callback,
                 )
                 loop1 = _merge_search_loop_attempts(
                     loop1,
@@ -6134,8 +6653,10 @@ async def deep_search(
         round_number=1,
         llm_config=llm_config,
         mon=mon,
+        prior_evidence_chunks=prior_evidence_chunks,
         final_round=(mode == "instant"),
     )
+    _回報回答證據(progress_callback, loop1_review, 1)
     mon.step_done(
         review_step,
         f"verdict={loop1_review.get('verdict')} / chunks={len(loop1_review.get('selected_chunks', []))}",
@@ -6159,8 +6680,10 @@ async def deep_search(
     if mode == "fast" and loop1_review.get("verdict") == "insufficient":
         loop2_queries = _resolve_reviewer_next_queries(loop1_review, search_queries)
         loop2_mode = normalize_search_mode(loop1_review.get("search_mode") or search_mode)
-        attempted_loop_urls = {
-            _normalize_url(p.get("url", "")) for p in [*all_pages, *all_failed]
+        attempted_loop_urls = set(crawl_excluded_urls) | {
+            _normalize_url(p.get("url", ""))
+            for p in [*all_pages, *all_failed]
+            if _normalize_url(p.get("url", ""))
         }
         carryover_groups = _build_carryover_query_groups(
             loop1.get("search_query_groups", []),
@@ -6220,6 +6743,7 @@ async def deep_search(
                 missing_focus=_review_missing_focus(loop1_review),
                 final_round=True,
             )
+            _回報回答證據(progress_callback, loop2_review, 2)
             mon.step_done(
                 loop2_review_step,
                 f"verdict={loop2_review.get('verdict')} / chunks={len(loop2_review.get('selected_chunks', []))}",
@@ -6243,7 +6767,11 @@ async def deep_search(
             search_mode=loop2_mode,
             loop_label="[Loop 2]",
             step_offset=review_step,
-            existing_urls={_normalize_url(p["url"]) for p in all_pages},
+            existing_urls=set(crawl_excluded_urls) | {
+                _normalize_url(p.get("url", ""))
+                for p in all_pages
+                if _normalize_url(p.get("url", ""))
+            },
             loop_crawl_budget=FULL_LOOP_CRAWL_BUDGET,
             tavily_search_depth="fast",
             **loop_kwargs,
@@ -6272,6 +6800,7 @@ async def deep_search(
                 prior_evidence_chunks=selected_chunks,
                 missing_focus=_review_missing_focus(loop1_review),
             )
+            _回報回答證據(progress_callback, loop2_review, 2)
             mon.step_done(
                 loop2_review_step,
                 f"verdict={loop2_review.get('verdict')} / chunks={len(loop2_review.get('selected_chunks', []))}",
@@ -6301,7 +6830,11 @@ async def deep_search(
             search_mode=loop3_mode,
             loop_label="[Loop 3 Narrow]",
             step_offset=review_step + 10,
-            existing_urls={_normalize_url(p["url"]) for p in all_pages},
+            existing_urls=set(crawl_excluded_urls) | {
+                _normalize_url(p.get("url", ""))
+                for p in all_pages
+                if _normalize_url(p.get("url", ""))
+            },
             loop_crawl_budget=FINAL_NARROW_CRAWL_BUDGET,
             tavily_search_depth="fast",
             **loop3_kwargs,
@@ -6331,6 +6864,7 @@ async def deep_search(
                 missing_focus=_review_missing_focus(final_review),
                 final_round=True,
             )
+            _回報回答證據(progress_callback, loop3_review, 3)
             mon.step_done(
                 loop3_review_step,
                 f"verdict={loop3_review.get('verdict')} / chunks={len(loop3_review.get('selected_chunks', []))}",
@@ -6397,6 +6931,8 @@ async def deep_search(
         "total_crawl_attempted": sum(int(loop.get("total_crawl_attempted", 0)) for loop in loop_results),
         "total_crawled_success": len(all_pages),
         "total_crawled_failed": len(all_failed),
+        "refreshed_sources_requested": len(requested_refresh_urls),
+        "refreshed_sources_success": len(refreshed_pages),
         "total_chunks_seen": int(chunk_filter.get("total_chunks", 0)),
         "total_chunks_prompted": int(chunk_filter.get("prompted_chunks", 0)),
         "total_chunks_selected": int(chunk_filter.get("selected_chunks", 0)),
@@ -6446,6 +6982,7 @@ async def deep_search(
             "raw_crawled_pages": len(all_pages),
             "evidence_pages": len(evidence_pages),
             "failed_pages": len(all_failed),
+            "refreshed_sources": len(refreshed_pages),
             "loops_executed": summary["loops_executed"],
         },
         "crawled_pages": evidence_pages,

@@ -55,6 +55,38 @@ class Reviewer故障容錯測試(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(有界[0]["results"]), 10)
         self.assertEqual(len(原始[0]["results"]), 30)
 
+    async def test_URLReviewer合法回應漏掉群組時仍補足候選(self) -> None:
+        查詢組 = [
+            {
+                "query": f"查詢{組別}",
+                "results": [
+                    {"title": f"標題 {組別}-{索引}", "url": f"https://source{組別}.example/{索引}"}
+                    for 索引 in range(2)
+                ],
+            }
+            for 組別 in range(3)
+        ]
+        合法但不完整的回應 = AsyncMock(
+            return_value=json.dumps(
+                {"selected": [{"group_index": 0, "result_indices": [1], "reasoning": "只回傳第一組"}]},
+                ensure_ascii=False,
+            )
+        )
+
+        with patch.object(搜尋管線, "_call_llm_raw_content", new=合法但不完整的回應):
+            結果 = await 搜尋管線.llm_filter_results(
+                "測試問題",
+                查詢組,
+                min_per_group=1,
+                max_per_group=2,
+                monitor=搜尋管線.PipelineMonitor(enabled=False),
+            )
+
+        self.assertEqual(
+            [(項目["group_index"], 項目["result_index"]) for 項目 in 結果["selected_urls"]],
+            [(0, 1), (1, 0), (2, 0)],
+        )
+
     async def test_ChunkReviewer連續請求失敗仍回傳證據(self) -> None:
         失敗請求 = AsyncMock(side_effect=ConnectionError("模擬斷線"))
         頁面 = [
@@ -84,7 +116,7 @@ class Reviewer故障容錯測試(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(結果["selected_chunks"])
         self.assertEqual(結果["parse_retries"], 搜尋管線.CHUNK_REVIEW_MAX_RETRIES)
 
-    async def test_Instant仍依序呼叫URL與ChunkJudge(self) -> None:
+    async def test_Instant的ChunkJudge會立即回報回答證據(self) -> None:
         async def 模擬搜尋(**_kwargs):
             groups = []
             for group_index in range(3):
@@ -146,6 +178,7 @@ class Reviewer故障容錯測試(unittest.IsolatedAsyncioTestCase):
             )
 
         外部Judge = AsyncMock(side_effect=模擬Judge)
+        研究軌跡: list[dict] = []
         with (
             patch.object(搜尋管線, "multi_source_search", new=模擬搜尋),
             patch.object(搜尋管線, "batch_deep_crawl", new=模擬爬取),
@@ -156,11 +189,19 @@ class Reviewer故障容錯測試(unittest.IsolatedAsyncioTestCase):
                 search_queries=["查詢0", "查詢1", "查詢2"],
                 mode="instant",
                 verbose=False,
+                progress_callback=研究軌跡.append,
             )
 
         self.assertEqual(外部Judge.await_count, 2)
         self.assertEqual(結果["chunk_filter"]["model_stage"], "round_reviewer")
         self.assertGreaterEqual(len(結果["evidence_bundle"]), 2)
+        回答證據事件 = [項目 for 項目 in 研究軌跡 if 項目.get("type") == "final_evidence"]
+        self.assertEqual(len(回答證據事件), 1)
+        self.assertEqual(
+            {區塊["from_query"] for 區塊 in 回答證據事件[0]["chunks"]},
+            {"查詢0", "查詢1", "查詢2"},
+        )
+        self.assertNotIn("judge_selection", {項目.get("type") for 項目 in 研究軌跡})
 
 
 class Monitor請求隔離測試(unittest.IsolatedAsyncioTestCase):

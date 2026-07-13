@@ -1,5 +1,5 @@
 // 每次前端版本更新都遞增，避免 PWA 持續提供舊版設定頁。
-const CACHE_VERSION = 'simplex-v2'
+const CACHE_VERSION = 'simplex-v3'
 const STATIC_CACHE = `static-${CACHE_VERSION}`
 const RUNTIME_CACHE = `runtime-${CACHE_VERSION}`
 const OFFLINE_URL = '/offline.html'

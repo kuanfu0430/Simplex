@@ -50,6 +50,47 @@ class Chunk測試(unittest.TestCase):
         self.assertTrue(all(0 < len(項目) <= 200 for 項目 in chunks))
         self.assertEqual("".join(chunks), 原文)
 
+    def test_PDF短排版行會先合併而不會逐行淘汰(self) -> None:
+        第一頁行 = [
+            "青銅器的研究必須回到器物本身的銘文、形制與使用脈絡。",
+            "本文以春秋時期的禮制轉型作為討論的起點與比較基礎。",
+            "不同區域的鑄造傳統也反映了政治與社會關係的持續變化。",
+            "考古材料與傳世文獻必須相互對讀，才能避免單一證據造成誤判。",
+        ]
+        第二頁行 = [
+            "器物在墓葬中的組合能夠呈現地方社群對身分與秩序的理解。",
+            "這些變化並非單線發展，而是多個技術與文化網絡共同作用的結果。",
+            "後續章節將以具體個案說明青銅器研究如何連結歷史問題。",
+        ]
+        頁面 = {
+            "url": "https://example.com/article.pdf",
+            "title": "青銅器研究",
+            "from_query": "春秋青銅器",
+            "resource_type": "pdf",
+            "content": "\n".join(["## 第 1 頁", *第一頁行, "## 第 2 頁", *第二頁行]),
+        }
+
+        chunks = 搜尋管線._page_to_review_chunks(
+            頁面,
+            round_number=1,
+            source_ordinal=1,
+            question="青銅器研究的核心方法是什麼？",
+        )
+
+        self.assertEqual(len(chunks), 2)
+        全文 = " ".join(項目["text"] for 項目 in chunks)
+        self.assertIn(第一頁行[0], 全文)
+        self.assertIn(第二頁行[-1], 全文)
+        self.assertTrue(all(len(項目["text"]) >= 搜尋管線.CHUNK_MIN_CHARS for 項目 in chunks))
+
+    def test_PDF清洗保留頁面與段落空行(self) -> None:
+        原文 = "## 第 1 頁\n\n第一段內容。\n\n第二段內容。\n\n## 第 2 頁\n\n第三段內容。"
+
+        清洗後 = 搜尋管線._clean_pdf_content(原文, title="測試 PDF")
+
+        self.assertIn("## 第 1 頁\n\n第一段內容。\n\n第二段內容。", 清洗後)
+        self.assertIn("## 第 2 頁\n\n第三段內容。", 清洗後)
+
     def test_reviewer只接受存在的Chunk並去除重複ID(self) -> None:
         chunk_map = {
             "L1-S1-C001": {

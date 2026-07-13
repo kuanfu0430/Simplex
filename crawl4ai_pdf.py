@@ -32,7 +32,10 @@ PDF_SCAN_PAGE_MAX_TEXT = 20
 PDF_SCAN_DOC_RATIO = 0.8
 PDF_TEXT_DOC_RATIO = 0.6
 PDF_OCR_DPI = max(72, int(os.getenv("PDF_OCR_DPI", "200")))
-PDF_OCR_LANGUAGES = os.getenv("PDF_OCR_LANGUAGES", "eng").strip() or "eng"
+PDF_OCR_LANGUAGES = (
+    os.getenv("PDF_OCR_LANGUAGES", "eng+chi_tra+chi_sim+jpn").strip()
+    or "eng+chi_tra+chi_sim+jpn"
+)
 PDF_ENABLE_OCR = os.getenv("PDF_ENABLE_OCR", "true").strip().lower() not in {
     "0",
     "false",
