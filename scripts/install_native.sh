@@ -24,10 +24,23 @@ then
   exit 1
 fi
 
-if ! command -v tesseract >/dev/null 2>&1; then
+MISSING_OCR_LANGUAGES=()
+if command -v tesseract >/dev/null 2>&1; then
+  for language in eng chi_tra chi_sim jpn; do
+    if ! tesseract --list-langs 2>/dev/null | grep -Fxq "$language"; then
+      MISSING_OCR_LANGUAGES+=("$language")
+    fi
+  done
+fi
+
+if ! command -v tesseract >/dev/null 2>&1 || [[ ${#MISSING_OCR_LANGUAGES[@]} -gt 0 ]]; then
   if [[ "$(uname -s)" == "Darwin" ]] && command -v brew >/dev/null 2>&1; then
     echo "[Simplex] 安裝 Tesseract OCR…"
-    brew install tesseract
+    if ! command -v tesseract >/dev/null 2>&1; then
+      brew install tesseract
+    fi
+    echo "[Simplex] 安裝中日文 OCR 語言資料…"
+    brew install tesseract-lang
   elif command -v apt-get >/dev/null 2>&1; then
     echo "[Simplex] 需要系統權限安裝 Tesseract 與瀏覽器依賴。"
     APT_COMMAND=(apt-get)
@@ -39,11 +52,27 @@ if ! command -v tesseract >/dev/null 2>&1; then
       APT_COMMAND=(sudo apt-get)
     fi
     "${APT_COMMAND[@]}" update
-    "${APT_COMMAND[@]}" install -y tesseract-ocr tesseract-ocr-eng tesseract-ocr-chi-tra
+    "${APT_COMMAND[@]}" install -y \
+      tesseract-ocr \
+      tesseract-ocr-eng \
+      tesseract-ocr-chi-tra \
+      tesseract-ocr-chi-sim \
+      tesseract-ocr-jpn
   else
     echo "[Simplex] 找不到可支援的套件管理器，請先安裝 Tesseract。" >&2
     exit 1
   fi
+fi
+
+MISSING_OCR_LANGUAGES=()
+for language in eng chi_tra chi_sim jpn; do
+  if ! tesseract --list-langs 2>/dev/null | grep -Fxq "$language"; then
+    MISSING_OCR_LANGUAGES+=("$language")
+  fi
+done
+if [[ ${#MISSING_OCR_LANGUAGES[@]} -gt 0 ]]; then
+  echo "[Simplex] 缺少 Tesseract OCR 語言資料：${MISSING_OCR_LANGUAGES[*]}" >&2
+  exit 1
 fi
 
 echo "[Simplex] 建立 Python 環境…"

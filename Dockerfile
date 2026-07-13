@@ -23,6 +23,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       tesseract-ocr \
       tesseract-ocr-eng \
       tesseract-ocr-chi-tra \
+      tesseract-ocr-chi-sim \
+      tesseract-ocr-jpn \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt requirements.lock ./

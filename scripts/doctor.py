@@ -6,11 +6,13 @@ from __future__ import annotations
 import asyncio
 import importlib.metadata
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
 
 根目錄 = Path(__file__).resolve().parent.parent
+必要OCR語言 = ("eng", "chi_tra", "chi_sim", "jpn")
 
 
 def 通過(名稱: str, 詳情: str = "") -> None:
@@ -62,6 +64,24 @@ def main() -> int:
     tesseract = shutil.which("tesseract")
     if tesseract:
         通過("Tesseract OCR", tesseract)
+        try:
+            結果 = subprocess.run(
+                [tesseract, "--list-langs"],
+                capture_output=True,
+                check=True,
+                text=True,
+                timeout=10,
+            )
+            已安裝語言 = set(結果.stdout.splitlines()[1:])
+            缺少語言 = [語言 for 語言 in 必要OCR語言 if 語言 not in 已安裝語言]
+            if 缺少語言:
+                失敗("Tesseract OCR 語言資料", f"缺少 {', '.join(缺少語言)}")
+                錯誤 += 1
+            else:
+                通過("Tesseract OCR 語言資料", ", ".join(必要OCR語言))
+        except (OSError, subprocess.SubprocessError) as exc:
+            失敗("Tesseract OCR 語言資料", type(exc).__name__)
+            錯誤 += 1
     else:
         失敗("Tesseract OCR", "未安裝；掃描 PDF 將無法 OCR")
         錯誤 += 1

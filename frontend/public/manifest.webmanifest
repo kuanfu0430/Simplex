@@ -1,7 +1,7 @@
 {
   "name": "Simplex Research",
   "short_name": "Simplex",
-  "description": "快速、精準、可自行掌控的研究搜尋工具",
+  "description": "Fast, precise, self-controlled research search",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

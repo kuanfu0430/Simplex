@@ -1,4 +1,5 @@
-import type { AppSettings, Health, ResearchMode, SearchMode, SearchResult } from './types'
+import type { AppSettings, ConversationMessage, Health, Language, ModelPoolEntry, ResearchMode, ResearchTraceEvent, SearchMode, SearchResult } from './types'
+import { createTranslator, normalizeLanguage } from './i18n'
 
 async function readError(response: Response): Promise<string> {
   try {
@@ -41,9 +42,17 @@ export async function loadHealth(): Promise<Health> {
 export interface SearchCallbacks {
   onStatus: (message: string, payload: Record<string, unknown>) => void
   onWarning: (message: string) => void
+  onResearchTrace: (event: ResearchTraceEvent) => void
   onAnswerStart: (result: SearchResult) => void
   onAnswerDelta: (delta: string) => void
   onResult: (result: SearchResult) => void
+}
+
+export interface ConversationContext {
+  history: ConversationMessage[]
+  capsules: string[]
+  forceResearch: boolean
+  turnId: string
 }
 
 function parseEventBlock(block: string): { event: string; data: unknown } | null {
@@ -77,11 +86,24 @@ export async function runSearch(
   mode: ResearchMode,
   callbacks: SearchCallbacks,
   signal?: AbortSignal,
+  language: Language = 'en',
+  modelSelection?: ModelPoolEntry,
+  context?: ConversationContext,
 ): Promise<void> {
+  const t = createTranslator(normalizeLanguage(language))
   const response = await fetch('/api/search/stream', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-    body: JSON.stringify({ question, search_mode: searchMode, mode }),
+    body: JSON.stringify({
+      question,
+      search_mode: searchMode,
+      mode,
+      model_selection: modelSelection,
+      conversation_history: context?.history || [],
+      context_capsules: context?.capsules || [],
+      force_research: context?.forceResearch || false,
+      turn_id: context?.turnId || '',
+    }),
     signal,
   })
   if (!response.ok || !response.body) throw new Error(await readError(response))
@@ -107,9 +129,13 @@ export async function runSearch(
       const parsed = parseEventBlock(block)
       if (!parsed) continue
       const payload = (parsed.data || {}) as Record<string, unknown>
-      if (parsed.event === 'status') callbacks.onStatus(String(payload.message || '處理中'), payload)
-      if (parsed.event === 'warning') callbacks.onWarning(String(payload.message || '部分功能降級'))
-      if (parsed.event === 'error') throw new Error(String(payload.message || '搜尋失敗'))
+      if (parsed.event === 'status') callbacks.onStatus(String(payload.message || t('preparingSearch')), payload)
+      if (parsed.event === 'warning') callbacks.onWarning(String(payload.message || t('degradedWarning')))
+      if (parsed.event === 'error') throw new Error(String(payload.message || t('searchFailed')))
+      if (parsed.event === 'research_trace') {
+        callbacks.onResearchTrace(payload as unknown as ResearchTraceEvent)
+        await waitForNextPaint()
+      }
       if (parsed.event === 'answer_start') callbacks.onAnswerStart(payload as unknown as SearchResult)
       if (parsed.event === 'answer_delta') {
         pendingAnswerDelta += String(payload.delta || '')

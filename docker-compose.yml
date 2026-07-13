@@ -32,7 +32,7 @@ services:
       CRAWL4_AI_BASE_DIRECTORY: /app/data
       SEARXNG_URL: http://searxng:8080
       PDF_ENABLE_OCR: "true"
-      PDF_OCR_LANGUAGES: eng+chi_tra
+      PDF_OCR_LANGUAGES: eng+chi_tra+chi_sim+jpn
     volumes:
       - simplex-data:/app/data
     ports:

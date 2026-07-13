@@ -2,6 +2,16 @@
 .env
 .env.*
 !.env.example
+*.secret
+*.key
+*.pem
+*.p12
+*.pfx
+*.db
+*.sqlite
+*.sqlite3
+secrets/
+credentials/
 
 # Python 快取與測試產物
 __pycache__/
